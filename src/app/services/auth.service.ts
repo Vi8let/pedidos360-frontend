@@ -36,7 +36,7 @@ export class AuthService {
       // Emisor OpenID Connect de Cognito
       issuer: environment.cognito.issuer,
 
-      // Endpoint explícito de autorización en Cognito Hosted UI para redirección inmediata sin depender de la red
+      // Endpoint explícito de autorización en Cognito Hosted UI para redirección inmediata
       loginUrl: `${environment.cognito.domain}/oauth2/authorize`,
 
       // Endpoint para canje de tokens con PKCE
@@ -48,17 +48,17 @@ export class AuthService {
       // URL a la que se redirige tras el login
       redirectUri: environment.cognito.redirectUri,
 
-      // Identificador del App Client en Cognito
+      // Identificador del App Client en Cognito (Público, sin Secret, con PKCE activado)
       clientId: environment.cognito.clientId,
 
       // Flujo Authorization Code Grant con PKCE (code_verifier / code_challenge)
       responseType: environment.cognito.responseType,
 
-      // Scopes solicitados
+      // Scopes solicitados (OIDC + Scope de Resource Server para el backend)
       scope: environment.cognito.scope,
 
-      // Muestra logs útiles en la consola durante desarrollo
-      showDebugInformation: true,
+      // Registra eventos útiles en consola durante desarrollo
+      showDebugInformation: !environment.production,
 
       // CRÍTICO PARA COGNITO: Los endpoints de autorización y token están alojados en
       // el dominio del Hosted UI, mientras que el issuer es el User Pool ID.
@@ -68,7 +68,7 @@ export class AuthService {
       skipIssuerCheck: true,
       disableAtHashCheck: true,
 
-      // Limpia parámetros y fragmentos de la URL tras el intercambio de código
+      // Limpia parámetros y fragmentos (?code=...) de la URL tras el intercambio de código
       clearHashAfterLogin: true
     };
 
@@ -93,7 +93,7 @@ export class AuthService {
     this.tryLoginPromise = this.oauthService.loadDiscoveryDocumentAndTryLogin({
       disableNonceCheck: true
     })
-      .then((loggedIn) => {
+      .then(() => {
         const isAuth = this.isAuthenticated();
         console.log('[AuthService] Proceso tryLogin completado. Autenticado:', isAuth);
         this.autenticado$.next(isAuth);
@@ -109,7 +109,6 @@ export class AuthService {
 
   /**
    * Inicia el flujo OAuth 2.0 PKCE redirigiendo a la pantalla de login de Cognito (Hosted UI)
-   * ejecutando directamente initCodeFlow() del servicio OAuthService de angular-oauth2-oidc
    */
   initCodeFlow(): void {
     console.log('[AuthService] Ejecutando oauthService.initCodeFlow() hacia AWS Cognito...');
@@ -125,14 +124,14 @@ export class AuthService {
   }
 
   /**
-   * Inicia el flujo OAuth 2.0 PKCE delegando en initCodeFlow()
+   * Inicia el flujo de autenticación delegando en initCodeFlow()
    */
   login(): void {
     this.initCodeFlow();
   }
 
   /**
-   * Cierra la sesión limpiando el almacenamiento local de tokens
+   * Cierra la sesión limpiando el almacenamiento de tokens
    * y redirigiendo al endpoint /logout de Cognito para invalidar la sesión del navegador
    */
   logout(): void {
@@ -155,7 +154,7 @@ export class AuthService {
   }
 
   /**
-   * Verifica si existe un token válido (ID Token o Access Token)
+   * Verifica si existe una sesión válida (Access Token o ID Token vigentes)
    */
   isAuthenticated(): boolean {
     if (this.oauthService.hasValidAccessToken() || this.oauthService.hasValidIdToken()) {
@@ -178,7 +177,16 @@ export class AuthService {
   }
 
   /**
-   * Retorna el Access Token (usado comúnmente para APIs protegidas por OAuth Scopes en API Gateway)
+   * Verifica si el Access Token actual es válido y no ha expirado
+   */
+  hasValidAccessToken(): boolean {
+    return this.oauthService.hasValidAccessToken();
+  }
+
+  /**
+   * Retorna el Access Token.
+   * FUNDAMENTAL para consumir APIs protegidas en Spring Boot Resource Server y AWS API Gateway,
+   * ya que transporta los OAuth scopes y token_use = 'access'.
    */
   getAccessToken(): string {
     const token = this.oauthService.getAccessToken();
@@ -190,7 +198,7 @@ export class AuthService {
   }
 
   /**
-   * Retorna el ID Token (usado comúnmente en Cognito Authorizers por defecto en API Gateway)
+   * Retorna el ID Token (utilizado principalmente para datos de identidad y claims del usuario OIDC).
    */
   getIdToken(): string {
     const token = this.oauthService.getIdToken();
@@ -227,7 +235,7 @@ export class AuthService {
 
   /**
    * Obtiene el identificador o correo del usuario decodificado desde los claims de Cognito.
-   * Prioriza el correo electrónico ('email') para la visualización dinámica en la barra superior.
+   * Prioriza el correo electrónico ('email') para la visualización en la interfaz.
    */
   getUsername(): string {
     const claims = this.getIdentityClaims();
@@ -237,19 +245,28 @@ export class AuthService {
 
   /**
    * Valida si el usuario autenticado pertenece al grupo 'Admin' en AWS Cognito
-   * leyendo la lista de grupos desde el claim 'cognito:groups' del token decodificado.
-   * Permite habilitar o restringir los botones de gestión CRUD en la interfaz.
+   * leyendo el claim 'cognito:groups' tanto en el ID Token como en el Access Token.
+   * Soporta variantes comunes ('Admin', 'admin', 'ADMIN', 'ROLE_ADMIN') para total
+   * compatibilidad con los roles y authorities de Spring Security.
    */
   isAdmin(): boolean {
-    const claims = this.getIdentityClaims();
-    if (claims && claims['cognito:groups']) {
-      const groups = claims['cognito:groups'];
+    const isMatchingAdmin = (groupName: any): boolean => {
+      if (typeof groupName !== 'string') return false;
+      const clean = groupName.trim().toLowerCase();
+      return clean === 'admin' || clean === 'role_admin';
+    };
+
+    const hasAdminGroup = (groups: any): boolean => {
+      if (!groups) return false;
       if (Array.isArray(groups)) {
-        return groups.includes('Admin');
+        return groups.some(isMatchingAdmin);
       }
-      if (typeof groups === 'string') {
-        return groups === 'Admin';
-      }
+      return isMatchingAdmin(groups);
+    };
+
+    const claims = this.getIdentityClaims();
+    if (claims && hasAdminGroup(claims['cognito:groups'])) {
+      return true;
     }
 
     try {
@@ -258,17 +275,13 @@ export class AuthService {
         const parts = accessToken.split('.');
         if (parts.length === 3) {
           const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-          const groups = payload['cognito:groups'];
-          if (Array.isArray(groups)) {
-            return groups.includes('Admin');
-          }
-          if (typeof groups === 'string') {
-            return groups === 'Admin';
+          if (hasAdminGroup(payload['cognito:groups'])) {
+            return true;
           }
         }
       }
     } catch {
-      // Ignorar si el token no tiene formato JWT
+      // Ignorar si el token no tiene formato JWT válido
     }
 
     return false;

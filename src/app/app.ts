@@ -23,7 +23,7 @@ export class App implements OnInit {
   mensajeAlerta: string | null = null;
   tipoAlerta: 'success' | 'danger' | 'info' = 'info';
 
-  // Lista de pedidos con datos simulados iniciales para visualización corporativa
+  // Catálogo base de referencia técnica para visualización corporativa
   pedidos: Pedido[] = [
     {
       id: 'ORD-9821',
@@ -103,7 +103,7 @@ export class App implements OnInit {
         if (this.authService.isAuthenticated()) {
           this.verificarSesion();
         } else {
-          this.errorAutenticacion = 'Error al procesar el token de autorización. Por favor intente nuevamente.';
+          this.errorAutenticacion = 'Error al procesar el token de autorización en AWS Cognito. Por favor intente nuevamente.';
         }
       } else if (event.type === 'token_expires') {
         console.warn('[Auth Event] La sesión ha expirado.');
@@ -157,7 +157,6 @@ export class App implements OnInit {
     console.log('[Auth Debug] ==========================================');
     console.log('[Auth Debug] Evaluando estado de sesión con isAuthenticated()...');
 
-    // Evaluación explícita del estado de autenticación
     this.autenticado = this.authService.isAuthenticated();
     console.log('[Auth Debug] this.autenticado =', this.autenticado);
 
@@ -181,17 +180,17 @@ export class App implements OnInit {
       console.log('[Auth Debug] Token válido detectado.');
       console.log('[Auth Debug] Nombre / Correo de usuario:', this.usuario);
       console.log('[Auth Debug] Claims decodificados del ID Token:', claims);
-      console.log('[Auth Debug] Grupos de Cognito encontrados (claims[\'cognito:groups\']):', grupos);
+      console.log('[Auth Debug] Grupos de Cognito encontrados:', grupos);
       console.log('[Auth Debug] ¿Pertenece al grupo \'Admin\' (isAdmin)?:', this.esAdmin);
 
       if (!this.esAdmin) {
-        console.warn('[Auth Debug] ADVERTENCIA: El usuario está autenticado pero NO pertenece al grupo "Admin". Funciones de creación, edición y eliminación restringidas.');
+        console.warn('[Auth Debug] ADVERTENCIA: Usuario autenticado sin rol Admin. Operaciones CRUD de modificación restringidas.');
         this.mostrarAlerta(`Bienvenido ${this.usuario}. Tu usuario no pertenece al grupo 'Admin'; operaciones CRUD limitadas a solo lectura.`, 'info');
       } else {
-        console.log('[Auth Debug] ÉXITO: Usuario verificado con rol de Administrador. Todas las funciones CRUD habilitadas.');
+        console.log('[Auth Debug] ÉXITO: Usuario verificado con rol de Administrador. Operaciones CRUD habilitadas.');
       }
 
-      // Ejecutar de inmediato la función para que las peticiones HTTP lleven el token cargado
+      // Cargar pedidos reales desde el backend Spring Boot a través de API Gateway
       this.cargarPedidos();
     } else {
       this.usuario = '';
@@ -202,26 +201,31 @@ export class App implements OnInit {
     console.log('[Auth Debug] ==========================================');
   }
 
-  // GET: Cargar pedidos desde API Gateway (únicamente con sesión válida autenticada)
+  // GET: Cargar pedidos desde el backend Spring Boot / API Gateway
   cargarPedidos(): void {
     if (!this.autenticado || !this.authService.isAuthenticated()) {
-      console.warn('[App] Solicitud GET a API Gateway bloqueada: esperando confirmación de sesión válida.');
+      console.warn('[App] Solicitud GET a backend bloqueada: esperando confirmación de sesión válida.');
       return;
     }
 
     this.cargando = true;
     this.pedidosService.getPedidos().subscribe({
-      next: (data: any) => {
-        const respuesta = Array.isArray(data) ? data : (data?.Items || data?.pedidos);
-        if (respuesta && respuesta.length > 0) {
-          this.pedidos = respuesta;
-        }
+      next: (data: Pedido[]) => {
         this.cargando = false;
-        this.mostrarAlerta('Lista de pedidos sincronizada con API Gateway.', 'success');
+        this.pedidos = data;
+        if (data.length > 0) {
+          this.mostrarAlerta(`Sincronizados ${data.length} pedidos desde el backend Spring Boot.`, 'success');
+        } else {
+          this.mostrarAlerta('Conectado con backend Spring Boot: No hay pedidos registrados en base de datos PostgreSQL.', 'info');
+        }
       },
       error: (err) => {
-        console.warn('API Gateway offline o sin conexión directa, operando en modo consola:', err);
         this.cargando = false;
+        // Se limpia la lista para evitar que datos simulados oculten fallos de conexión o autorización
+        this.pedidos = [];
+        const mensaje = this.formatearMensajeError(err, 'cargar la lista de pedidos');
+        console.error('[App] Error al consultar backend Spring Boot / API Gateway:', err);
+        this.mostrarAlerta(mensaje, 'danger');
       }
     });
   }
@@ -229,7 +233,7 @@ export class App implements OnInit {
   // POST: Apertura de modal y creación
   abrirModalNuevo(): void {
     if (!this.esAdmin) {
-      this.mostrarAlerta('Acceso denegado: Se requiere rol de Administrador (Grupo Admin en Cognito) para crear pedidos.', 'danger');
+      this.mostrarAlerta('Acceso denegado (403): Se requiere rol de Administrador (Grupo Admin en Cognito) para crear pedidos.', 'danger');
       return;
     }
     this.nuevoPedido = {
@@ -248,54 +252,48 @@ export class App implements OnInit {
 
   guardarNuevoPedido(): void {
     if (!this.esAdmin) {
-      this.mostrarAlerta('Acceso denegado: Operación de creación reservada exclusivamente para Administradores.', 'danger');
+      this.mostrarAlerta('Acceso denegado (403): Operación de creación reservada exclusivamente para Administradores.', 'danger');
       return;
     }
 
     if (!this.nuevoPedido.producto || this.nuevoPedido.cantidad < 1 || !this.nuevoPedido.imageUrl) {
-      this.mostrarAlerta('Por favor completa todos los campos requeridos, incluyendo la imagen y el stock.', 'danger');
+      this.mostrarAlerta('Por favor completa todos los campos requeridos, incluyendo nombre del producto, cantidad e imagen.', 'danger');
       return;
     }
 
-    const tempId = 'ORD-' + Math.floor(1000 + Math.random() * 9000);
-    const localOrder: Pedido = {
-      ...this.nuevoPedido,
-      stock: Number(this.nuevoPedido.stock) || 0,
-      id: tempId
-    };
+    this.cargando = true;
 
-    // Actualización local inmediata (simulación reactiva)
-    this.pedidos.unshift(localOrder);
-    this.cerrarModalNuevo();
-    this.mostrarAlerta(`Pedido [${tempId}] registrado correctamente (POST).`, 'success');
-
-    // Envío HTTP real a través del API Gateway
+    // Payload limpio hacia Spring Boot: No se incluye id generado localmente para que PostgreSQL asigne la clave primaria
     const backendPayload: Pedido = {
-      producto: localOrder.producto,
-      cantidad: localOrder.cantidad,
-      stock: localOrder.stock,
-      imageUrl: localOrder.imageUrl,
-      estado: localOrder.estado
+      producto: this.nuevoPedido.producto.trim(),
+      descripcion: this.nuevoPedido.descripcion ? this.nuevoPedido.descripcion.trim() : undefined,
+      cantidad: Number(this.nuevoPedido.cantidad),
+      stock: Number(this.nuevoPedido.stock) || 0,
+      imageUrl: this.nuevoPedido.imageUrl.trim(),
+      estado: this.nuevoPedido.estado || 'En preparación'
     };
 
     this.pedidosService.crearPedido(backendPayload).subscribe({
-      next: (res: any) => {
-        console.log('POST completado en backend:', res);
-        if (res && res.id) {
-          const index = this.pedidos.findIndex(p => p.id === tempId);
-          if (index !== -1) {
-            this.pedidos[index] = { ...this.pedidos[index], id: res.id };
-          }
-        }
+      next: (res: Pedido) => {
+        this.cargando = false;
+        const pedidoConfirmado: Pedido = res && res.id ? res : { ...backendPayload, id: 'ORD-' + Date.now() };
+        this.pedidos.unshift(pedidoConfirmado);
+        this.cerrarModalNuevo();
+        this.mostrarAlerta(`Pedido [${pedidoConfirmado.id}] registrado exitosamente en el backend Spring Boot (POST 201).`, 'success');
       },
-      error: (err) => console.log('Simulado / backend pendiente de despliegue CRUD:', err)
+      error: (err) => {
+        this.cargando = false;
+        const mensaje = this.formatearMensajeError(err, 'crear el pedido');
+        console.error('[App] Error al registrar pedido en backend:', err);
+        this.mostrarAlerta(mensaje, 'danger');
+      }
     });
   }
 
   // PUT: Apertura de modal y edición de estado
   abrirModalEditar(pedido: Pedido): void {
     if (!this.esAdmin) {
-      this.mostrarAlerta('Acceso denegado: Se requiere rol de Administrador (Grupo Admin en Cognito) para editar pedidos.', 'danger');
+      this.mostrarAlerta('Acceso denegado (403): Se requiere rol de Administrador (Grupo Admin en Cognito) para editar pedidos.', 'danger');
       return;
     }
     this.pedidoSeleccionado = { ...pedido };
@@ -309,47 +307,87 @@ export class App implements OnInit {
 
   guardarEdicionEstado(): void {
     if (!this.esAdmin) {
-      this.mostrarAlerta('Acceso denegado: Operación de edición reservada para Administradores.', 'danger');
+      this.mostrarAlerta('Acceso denegado (403): Operación de edición reservada para Administradores.', 'danger');
       return;
     }
-    if (!this.pedidoSeleccionado || !this.pedidoSeleccionado.id) return;
+    if (!this.pedidoSeleccionado || this.pedidoSeleccionado.id === undefined) return;
 
-    const index = this.pedidos.findIndex(p => p.id === this.pedidoSeleccionado!.id);
-    if (index !== -1) {
-      this.pedidos[index] = { ...this.pedidoSeleccionado };
-    }
-
+    this.cargando = true;
     const id = this.pedidoSeleccionado.id;
-    const body = { ...this.pedidoSeleccionado };
-    this.cerrarModalEditar();
-    this.mostrarAlerta(`Estado del pedido [${id}] actualizado a "${body.estado}" (PUT).`, 'info');
+    const body: Pedido = { ...this.pedidoSeleccionado };
 
-    // Envío HTTP real
     this.pedidosService.actualizarPedido(id, body).subscribe({
-      next: () => console.log('PUT completado en backend'),
-      error: (err) => console.log('Simulado / backend pendiente de despliegue CRUD:', err)
+      next: (res: Pedido) => {
+        this.cargando = false;
+        const index = this.pedidos.findIndex(p => p.id === id);
+        if (index !== -1) {
+          this.pedidos[index] = res || body;
+        }
+        this.cerrarModalEditar();
+        this.mostrarAlerta(`Estado del pedido [${id}] actualizado exitosamente a "${body.estado}" en backend (PUT 200).`, 'success');
+      },
+      error: (err) => {
+        this.cargando = false;
+        const mensaje = this.formatearMensajeError(err, 'actualizar el estado del pedido');
+        console.error('[App] Error al actualizar pedido en backend:', err);
+        this.mostrarAlerta(mensaje, 'danger');
+      }
     });
   }
 
   // DELETE: Cancelar / Eliminar pedido
   cancelarPedido(id: string | number | undefined): void {
-    if (!id) return;
+    if (id === undefined) return;
     if (!this.esAdmin) {
-      this.mostrarAlerta('Acceso denegado: Se requiere rol de Administrador (Grupo Admin en Cognito) para cancelar pedidos.', 'danger');
+      this.mostrarAlerta('Acceso denegado (403): Se requiere rol de Administrador (Grupo Admin en Cognito) para cancelar pedidos.', 'danger');
       return;
     }
 
-    const confirmar = confirm(`¿Estás seguro de cancelar el pedido con ID ${id}?`);
-    if (confirmar) {
-      this.pedidos = this.pedidos.filter(p => p.id !== id);
-      this.mostrarAlerta(`Pedido [${id}] cancelado y eliminado (DELETE).`, 'danger');
+    const confirmar = confirm(`¿Estás seguro de cancelar y eliminar el pedido con ID ${id}?`);
+    if (!confirmar) return;
 
-      // Envío HTTP real
-      this.pedidosService.eliminarPedido(id).subscribe({
-        next: () => console.log('DELETE completado en backend'),
-        error: (err) => console.log('Simulado / backend pendiente de despliegue CRUD:', err)
-      });
+    this.cargando = true;
+    this.pedidosService.eliminarPedido(id).subscribe({
+      next: () => {
+        this.cargando = false;
+        this.pedidos = this.pedidos.filter(p => p.id !== id);
+        this.mostrarAlerta(`Pedido [${id}] cancelado y eliminado correctamente del backend (DELETE).`, 'info');
+      },
+      error: (err) => {
+        this.cargando = false;
+        const mensaje = this.formatearMensajeError(err, 'eliminar el pedido');
+        console.error('[App] Error al eliminar pedido en backend:', err);
+        this.mostrarAlerta(mensaje, 'danger');
+      }
+    });
+  }
+
+  /**
+   * Genera mensajes de error comprensibles y específicos según el estado HTTP
+   */
+  formatearMensajeError(error: any, accion: string): string {
+    if (!error) return `Error inesperado al ${accion}.`;
+    const status = error.status;
+
+    if (status === 0) {
+      return `Error de conexión: No se pudo contactar el backend Spring Boot / API Gateway al ${accion}. Verifica que el servicio esté activo y las políticas CORS permitidas.`;
     }
+    if (status === 401) {
+      return `Error 401 (No Autorizado): Sesión inválida o token vencido al ${accion}. Por favor inicia sesión nuevamente en AWS Cognito.`;
+    }
+    if (status === 403) {
+      return `Error 403 (Acceso Denegado): Tu usuario no posee permisos de Administrador (Grupo Admin en Cognito) para ${accion}.`;
+    }
+    if (status === 404) {
+      return `Error 404 (No Encontrado): El recurso solicitado no existe en el backend Spring Boot.`;
+    }
+    if (status === 409) {
+      return error.error?.message || `Error 409 (Conflicto): Conflicto en el servidor backend al ${accion}.`;
+    }
+    if (status >= 500) {
+      return error.error?.message || `Error ${status} (Servidor): Ocurrió un error interno en el backend Spring Boot al ${accion}.`;
+    }
+    return error.error?.message || error.message || `Error (${status || 'desconocido'}) al ${accion}.`;
   }
 
   mostrarAlerta(mensaje: string, tipo: 'success' | 'danger' | 'info'): void {
@@ -359,6 +397,6 @@ export class App implements OnInit {
       if (this.mensajeAlerta === mensaje) {
         this.mensajeAlerta = null;
       }
-    }, 4500);
+    }, 5000);
   }
 }
