@@ -224,21 +224,7 @@
 
                     <div class="product-info">
                       <span class="product-name">{{ pedido.producto }}</span>
-                      <span class="product-specs">
-                        @if (pedido.descripcion) {
-                          {{ pedido.descripcion }}
-                        } @else if (pedido.producto.toLowerCase().includes('macbook')) {
-                          Apple Silicon M3 Max • 36GB Unified Memory • Liquid Retina XDR
-                        } @else if (pedido.producto.toLowerCase().includes('poweredge') || pedido.producto.toLowerCase().includes('servidor')) {
-                          Enterprise Rack 2U • Dual Intel Xeon • Hot-swap Redundant PSU
-                        } @else if (pedido.producto.toLowerCase().includes('cisco')) {
-                          Managed Gigabit Switch • 48 Puertos PoE+ • Cisco IOS XE
-                        } @else if (pedido.producto.toLowerCase().includes('rtx') || pedido.producto.toLowerCase().includes('gpu')) {
-                          NVIDIA Ada Lovelace • 24GB GDDR6X • Ray Tracing Cores
-                        } @else {
-                          Dispositivo Certificado Cloud Hardware 360
-                        }
-                      </span>
+                      <span class="product-specs">Inventario administrado en Pedidos 360</span>
                     </div>
                   </div>
                 </td>
@@ -255,21 +241,25 @@
 
                 <!-- Estado (Píldoras Neón Glassmorphism) -->
                 <td class="text-center">
-                  @if (pedido.estado === 'Entregado') {
+                  @if (pedido.estado === 'ENTREGADO') {
                     <span class="status-pill status-entregado">
-                      Entregado
+                      {{ etiquetaEstado(pedido.estado) }}
                     </span>
-                  } @else if (pedido.estado === 'Enviado') {
+                  } @else if (pedido.estado === 'DISPONIBLE') {
                     <span class="status-pill status-enviado">
-                      Enviado
+                      {{ etiquetaEstado(pedido.estado) }}
                     </span>
-                  } @else if (pedido.estado === 'En preparación') {
+                  } @else if (pedido.estado === 'EN_PREPARACION') {
                     <span class="status-pill status-preparacion">
-                      En preparación
+                      {{ etiquetaEstado(pedido.estado) }}
+                    </span>
+                  } @else if (pedido.estado === 'PENDIENTE') {
+                    <span class="status-pill status-default">
+                      {{ etiquetaEstado(pedido.estado) }}
                     </span>
                   } @else {
                     <span class="status-pill status-default">
-                      {{ pedido.estado }}
+                      {{ etiquetaEstado(pedido.estado) }}
                     </span>
                   }
                 </td>
@@ -467,9 +457,10 @@
             <div class="mb-2">
               <label for="nuevoEstado" class="form-label">Estado Inicial</label>
               <select class="form-select" id="nuevoEstado" name="nuevoEstado" [(ngModel)]="nuevoPedido.estado">
-                <option value="En preparación">En preparación</option>
-                <option value="Enviado">Enviado</option>
-                <option value="Entregado">Entregado</option>
+                <option value="PENDIENTE">Pendiente</option>
+                <option value="EN_PREPARACION">En preparación</option>
+                <option value="DISPONIBLE">Disponible</option>
+                <option value="ENTREGADO">Entregado</option>
               </select>
             </div>
           </div>
@@ -513,9 +504,10 @@
               <label for="editarEstado" class="form-label">Nuevo Estado de Entrega</label>
               <select class="form-select form-select-lg" id="editarEstado" name="editarEstado"
                       [(ngModel)]="pedidoSeleccionado.estado">
-                <option value="En preparación">En preparación</option>
-                <option value="Enviado">Enviado</option>
-                <option value="Entregado">Entregado</option>
+                <option value="PENDIENTE">Pendiente</option>
+                <option value="EN_PREPARACION">En preparación</option>
+                <option value="DISPONIBLE">Disponible</option>
+                <option value="ENTREGADO">Entregado</option>
               </select>
             </div>
           </div>

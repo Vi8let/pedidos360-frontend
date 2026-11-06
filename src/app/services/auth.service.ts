@@ -60,13 +60,9 @@ export class AuthService {
       // Registra eventos útiles en consola durante desarrollo
       showDebugInformation: !environment.production,
 
-      // CRÍTICO PARA COGNITO: Los endpoints de autorización y token están alojados en
-      // el dominio del Hosted UI, mientras que el issuer es el User Pool ID.
-      // strictDiscoveryDocumentValidation, skipIssuerCheck y disableAtHashCheck evitan
-      // que la librería descarte tokens válidos devueltos por AWS Cognito.
+      // Cognito publica el issuer del User Pool en el discovery document. Se mantienen
+      // las validaciones OIDC aunque los endpoints del Hosted UI usen otro dominio.
       strictDiscoveryDocumentValidation: false,
-      skipIssuerCheck: true,
-      disableAtHashCheck: true,
 
       // Limpia parámetros y fragmentos (?code=...) de la URL tras el intercambio de código
       clearHashAfterLogin: true
@@ -90,9 +86,7 @@ export class AuthService {
 
     // Carga el documento .well-known/openid-configuration de Cognito
     // y si la URL actual contiene el código (?code=...), ejecuta el intercambio por tokens (PKCE)
-    this.tryLoginPromise = this.oauthService.loadDiscoveryDocumentAndTryLogin({
-      disableNonceCheck: true
-    })
+    this.tryLoginPromise = this.oauthService.loadDiscoveryDocumentAndTryLogin()
       .then(() => {
         const isAuth = this.isAuthenticated();
         console.log('[AuthService] Proceso tryLogin completado. Autenticado:', isAuth);
@@ -100,10 +94,9 @@ export class AuthService {
         return isAuth;
       })
       .catch(error => {
-        console.warn('[AuthService] Advertencia o error en loadDiscoveryDocumentAndTryLogin:', error);
-        const isAuth = this.isAuthenticated();
-        this.autenticado$.next(isAuth);
-        return isAuth;
+        this.autenticado$.next(false);
+        console.error('[AuthService] No se pudo validar la sesión OIDC:', error);
+        throw error;
       });
   }
 
@@ -112,15 +105,7 @@ export class AuthService {
    */
   initCodeFlow(): void {
     console.log('[AuthService] Ejecutando oauthService.initCodeFlow() hacia AWS Cognito...');
-    try {
-      this.oauthService.initCodeFlow();
-    } catch (err) {
-      console.warn('[AuthService] Fallback directo a Cognito Hosted UI:', err);
-      if (environment.cognito.domain && environment.cognito.clientId) {
-        const directUrl = `${environment.cognito.domain}/oauth2/authorize?client_id=${environment.cognito.clientId}&response_type=${environment.cognito.responseType}&scope=${encodeURIComponent(environment.cognito.scope)}&redirect_uri=${encodeURIComponent(environment.cognito.redirectUri)}`;
-        window.location.href = directUrl;
-      }
-    }
+    this.oauthService.initCodeFlow();
   }
 
   /**
@@ -157,23 +142,7 @@ export class AuthService {
    * Verifica si existe una sesión válida (Access Token o ID Token vigentes)
    */
   isAuthenticated(): boolean {
-    if (this.oauthService.hasValidAccessToken() || this.oauthService.hasValidIdToken()) {
-      return true;
-    }
-
-    const accessToken = this.oauthService.getAccessToken();
-    const idToken = this.oauthService.getIdToken();
-    if (accessToken || idToken) {
-      return true;
-    }
-
-    if (typeof sessionStorage !== 'undefined') {
-      if (sessionStorage.getItem('access_token') || sessionStorage.getItem('id_token')) {
-        return true;
-      }
-    }
-
-    return false;
+    return this.oauthService.hasValidAccessToken();
   }
 
   /**
@@ -189,24 +158,14 @@ export class AuthService {
    * ya que transporta los OAuth scopes y token_use = 'access'.
    */
   getAccessToken(): string {
-    const token = this.oauthService.getAccessToken();
-    if (token) return token;
-    if (typeof sessionStorage !== 'undefined') {
-      return sessionStorage.getItem('access_token') || '';
-    }
-    return '';
+    return this.oauthService.hasValidAccessToken() ? this.oauthService.getAccessToken() : '';
   }
 
   /**
    * Retorna el ID Token (utilizado principalmente para datos de identidad y claims del usuario OIDC).
    */
   getIdToken(): string {
-    const token = this.oauthService.getIdToken();
-    if (token) return token;
-    if (typeof sessionStorage !== 'undefined') {
-      return sessionStorage.getItem('id_token') || '';
-    }
-    return '';
+    return this.oauthService.hasValidIdToken() ? this.oauthService.getIdToken() : '';
   }
 
   /**
@@ -250,10 +209,12 @@ export class AuthService {
    * compatibilidad con los roles y authorities de Spring Security.
    */
   isAdmin(): boolean {
+    const configuredAdminGroup = environment.cognito.adminGroup.trim().toLowerCase();
     const isMatchingAdmin = (groupName: any): boolean => {
       if (typeof groupName !== 'string') return false;
       const clean = groupName.trim().toLowerCase();
-      return clean === 'admin' || clean === 'role_admin';
+      return clean === configuredAdminGroup
+        || clean === `role_${configuredAdminGroup}`;
     };
 
     const hasAdminGroup = (groups: any): boolean => {

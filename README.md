@@ -44,6 +44,8 @@ Este repositorio corresponde exclusivamente al **Frontend**.
    ```
    Abrir `http://localhost:4200/` en el navegador.
 
+El profile de desarrollo de Angular apunta al productor REST en `http://localhost:8888/api/pedidos`. Los estados válidos son `PENDIENTE`, `EN_PREPARACION`, `DISPONIBLE` y `ENTREGADO`. El frontend utiliza el ID devuelto por PostgreSQL y no mantiene un catálogo de pedidos simulado.
+
 ---
 
 ## 🧪 Pruebas y Compilación
@@ -66,5 +68,19 @@ Este repositorio corresponde exclusivamente al **Frontend**.
 Los parámetros de integración con AWS Cognito y el API Gateway se encuentran en:
 * `src/environments/environment.ts` (Producción / Default)
 * `src/environments/environment.development.ts` (Desarrollo Local)
+
+Al cambiar de cuenta o ambiente AWS, actualiza issuer, Client ID público, dominio Hosted UI,
+scopes, grupo administrador y URL de API Gateway en el environment Angular correspondiente.
+`npm start` usa el environment de desarrollo; `npm run build` genera el build productivo.
+El build productivo calcula callback y cierre de sesión con el origen actual del sitio, que
+debe estar registrado en el App Client de Cognito. No agregues client secrets ni credenciales
+AWS al frontend.
+
+El Resource Server Cognito de este ambiente debe tener Identifier `pedidos360` y tres
+custom scopes: `pedidos.read`, `pedidos.write` y `admin.manage`. El Access Token pide los
+scopes completos `pedidos360/pedidos.read`, `pedidos360/pedidos.write` y
+`pedidos360/admin.manage`; API Gateway debe asociar read a los GET de pedidos, write a
+POST/PUT/DELETE de pedidos y admin.manage a las rutas `/api/admin/**`. El backend verifica
+además el grupo Cognito `Admin` para escrituras y administración.
 
 Para más detalles sobre los contratos de datos, roles (`Admin`), endpoints y validaciones con el backend Spring Boot, consultar [`AUDITORIA.md`](./AUDITORIA.md).

@@ -70,13 +70,12 @@ Definida en `src/app/services/pedidos.service.ts`:
 
 ```typescript
 export interface Pedido {
-  id?: string | number; // Clave primaria generada por PostgreSQL (Long autoincremental o UUID)
+  id?: number; // Clave primaria Long generada por PostgreSQL; solo falta en el payload de creación
   producto: string; // Nombre o modelo del producto (Requerido)
-  descripcion?: string; // Detalle técnico (opcional)
+  imageUrl: string; // Imagen del producto (requerida por el backend)
   cantidad: number; // Cantidad solicitada (mínimo 1)
-  stock?: number; // Stock disponible en inventario
-  estado?: string; // 'En preparación' | 'Enviado' | 'Entregado'
-  imageUrl?: string; // URL pública (CDN, HTTPS o S3) de la miniatura
+  stock: number; // Stock disponible en inventario
+  estado: 'PENDIENTE' | 'EN_PREPARACION' | 'DISPONIBLE' | 'ENTREGADO';
 }
 ```
 
@@ -84,8 +83,9 @@ export interface Pedido {
 
 Configurados en `environment.api.pedidosUrl`:
 
-- **URL Base en API Gateway:** `https://2c0yqndsn0.execute-api.us-east-1.amazonaws.com/test/api/pedidos`
-- **URL Local de Desarrollo:** `http://localhost:8080/api/pedidos`
+- **URL Base en API Gateway:** `https://3kmb7eji42.execute-api.us-east-1.amazonaws.com/dev/api/pedidos`
+- **URL Local de Desarrollo:** `http://localhost:8888/api/pedidos`
+- **Scopes custom de Cognito:** `pedidos360/pedidos.read`, `pedidos360/pedidos.write`, `pedidos360/admin.manage`.
 - **Cabecera requerida en todas las llamadas:**
   ```http
   Authorization: Bearer <ACCESS_TOKEN>
@@ -94,10 +94,10 @@ Configurados en `environment.api.pedidosUrl`:
 
 | Verbo      | Endpoint            | Payload Enviado                                                           | Respuesta Esperada                                        | Descripción                                                                                                                                 |
 | :--------- | :------------------ | :------------------------------------------------------------------------ | :-------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| **GET**    | `/api/pedidos`      | _Ninguno_                                                                 | `Pedido[]` o `Page<Pedido>` (`{ content: Pedido[] }`)     | Lista todas las órdenes almacenadas en PostgreSQL. El frontend mapea automáticamente listas directas o respuestas paginadas de Spring Data. |
-| **POST**   | `/api/pedidos`      | `{ producto, descripcion, cantidad, stock, imageUrl, estado }` (sin `id`) | `Pedido` (`201 Created` con `id` asignado por PostgreSQL) | Registra una nueva orden en la base de datos PostgreSQL.                                                                                    |
+| **GET**    | `/api/pedidos`      | _Ninguno_                                                                 | `Pedido[]`                                                | Lista las órdenes almacenadas en PostgreSQL.                                                                                               |
+| **POST**   | `/api/pedidos`      | `{ producto, cantidad, stock, imageUrl, estado }` (sin `id`)               | `Pedido` (`201 Created` con `id` asignado por PostgreSQL) | Registra una nueva orden en la base de datos PostgreSQL.                                                                                    |
 | **PUT**    | `/api/pedidos/{id}` | Objeto `Pedido` completo con nuevo `estado`                               | `Pedido` (`200 OK`)                                       | Actualiza el estado o detalle de la orden seleccionada.                                                                                     |
-| **DELETE** | `/api/pedidos/{id}` | _Ninguno_                                                                 | `204 No Content` o `200 OK`                               | Elimina la orden por su identificador en PostgreSQL.                                                                                        |
+| **DELETE** | `/api/pedidos/{id}` | _Ninguno_                                                                 | `204 No Content`                                          | Elimina la orden por su identificador en PostgreSQL.                                                                                        |
 
 ---
 
@@ -130,7 +130,7 @@ sequenceDiagram
 
 ### 5.1. Uso del Access Token vs ID Token
 
-- **Access Token:** Es el token transmitido en la cabecera `Authorization: Bearer <token>` hacia el backend Spring Boot. Contiene el claim `token_use: "access"`, el scope `rs-api-pedidos/pedidos-read` y los grupos del usuario. Es el estándar requerido por `spring-boot-starter-oauth2-resource-server`.
+- **Access Token:** Es el token transmitido en la cabecera `Authorization: Bearer <token>` hacia el backend Spring Boot. Contiene el claim `token_use: "access"`, los scopes solicitados al Resource Server y los grupos del usuario. API Gateway verifica el scope requerido por ruta; el backend verifica adicionalmente el grupo `Admin` para mutaciones y administración.
 - **ID Token:** Se conserva para la visualización de la identidad del usuario (`email`, `username`, `sub`) en la barra superior.
 
 ### 5.2. Control de Acceso por Roles (RBAC)
@@ -151,26 +151,34 @@ Para garantizar que los datos de prueba nunca enmascaren fallos reales del backe
    - **Acceso Denegado (Status 403):** Alerta informando que la cuenta no pertenece al grupo `Admin`.
    - **Error de Servidor (Status 500+):** Alerta informando fallo interno en Spring Boot.
 2. **Limpieza de Estado en Falla:**
-   - Si `cargarPedidos()` recibe un error del servidor, limpia la lista (`pedidos = []`), impidiendo que órdenes simuladas generen una falsa sensación de sincronización exitosa.
+   - La lista comienza vacía y no usa pedidos mock. Si `cargarPedidos()` recibe un error del servidor, limpia la lista (`pedidos = []`).
 3. **Persistencia Sincrónica:**
    - Las operaciones de creación (POST), edición (PUT) y eliminación (DELETE) solo actualizan la vista cuando la llamada HTTP al backend retorna exitosamente (`next`). Si el servidor rechaza la solicitud, el modal permanece abierto, se muestra el error específico y no se insertan registros fantasma.
+   - La creación exige el ID persistido que devuelve PostgreSQL; no se generan identificadores locales.
+4. **Contrato común de estado:**
+   - El frontend y el backend usan `PENDIENTE`, `EN_PREPARACION`, `DISPONIBLE` y `ENTREGADO`; la interfaz traduce estos códigos a etiquetas.
+5. **Sesión OIDC:**
+   - Solo un Access Token vigente habilita llamadas al backend. No se usa un ID Token ni se construye una URL de login manual sin PKCE como fallback.
+   - La creación exige que el backend devuelva el ID persistido; el frontend no inventa identificadores locales.
 
 ---
 
 ## 7. Checklist de Auditoría para el Desarrollador del Backend Spring Boot
 
-- [ ] **Configuración de CORS en Spring Boot / API Gateway:**
+- [x] **Configuración de CORS local en Spring Boot:**
   - Permitir el origen `http://localhost:4200`.
   - Encabezados permitidos: `Authorization`, `Content-Type`.
   - Métodos permitidos: `GET, POST, PUT, DELETE, OPTIONS`.
-- [ ] **Spring Security OAuth2 Resource Server:**
-  - Configurar `spring.security.oauth2.resourceserver.jwt.issuer-uri=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_C1DQHPBOn`.
+- [x] **Spring Security OAuth2 Resource Server:**
+  - Validar JWT con el issuer del User Pool configurado en el backend.
   - Mapear `cognito:groups` a `GrantedAuthority` (ej: `ROLE_Admin` o `Admin`).
-- [ ] **Estructura de la Entidad JPA `Pedido`:**
+- [x] **Estructura de la Entidad JPA `Pedido`:**
   - Tabla: `pedidos` en base de datos PostgreSQL.
-  - Campos: `id` (Long o UUID), `producto` (String), `descripcion` (String), `cantidad` (Integer), `stock` (Integer), `estado` (String), `imageUrl` o `image_url` (String).
-- [ ] **Respuestas REST:**
-  - `GET /api/pedidos` -> `List<Pedido>` o `Page<Pedido>`.
+  - Campos: `id` (Long), `producto`, `imageUrl`, `cantidad`, `stock` y `estado`.
+- [x] **Respuestas REST:**
+  - `GET /api/pedidos` -> `List<Pedido>`.
   - `POST /api/pedidos` -> Retornar el `Pedido` persistido con su ID asignado y código `201 Created`.
   - `PUT /api/pedidos/{id}` -> Retornar `200 OK`.
-  - `DELETE /api/pedidos/{id}` -> Retornar `204 No Content` o `200 OK`.
+  - `DELETE /api/pedidos/{id}` -> Retornar `204 No Content`.
+
+La URL de AWS del environment productivo y sus recursos no se modificaron; su configuración queda a cargo del estudiante.

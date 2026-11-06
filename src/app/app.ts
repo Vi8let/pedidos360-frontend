@@ -2,7 +2,7 @@ import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from './services/auth.service';
-import { PedidosService, Pedido } from './services/pedidos.service';
+import { PedidosService, Pedido, EstadoPedido } from './services/pedidos.service';
 
 @Component({
   selector: 'app-root',
@@ -23,45 +23,7 @@ export class App implements OnInit {
   mensajeAlerta: string | null = null;
   tipoAlerta: 'success' | 'danger' | 'info' = 'info';
 
-  // Catálogo base de referencia técnica para visualización corporativa
-  pedidos: Pedido[] = [
-    {
-      id: 'ORD-9821',
-      producto: 'MacBook Pro 16" M3 Max 36GB',
-      descripcion: 'Apple Silicon M3 Max • 36GB Unified Memory',
-      cantidad: 2,
-      stock: 14,
-      estado: 'En preparación',
-      imageUrl: 'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?auto=format&fit=crop&w=200&q=80'
-    },
-    {
-      id: 'ORD-9822',
-      producto: 'Servidor Dell PowerEdge R750',
-      descripcion: 'Enterprise Rack 2U • Dual Intel Xeon',
-      cantidad: 1,
-      stock: 6,
-      estado: 'Enviado',
-      imageUrl: 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=200&q=80'
-    },
-    {
-      id: 'ORD-9823',
-      producto: 'Switch Cisco Catalyst 9200 48P',
-      descripcion: 'Managed Gigabit Switch • 48 Puertos PoE+',
-      cantidad: 4,
-      stock: 28,
-      estado: 'Entregado',
-      imageUrl: 'https://images.unsplash.com/photo-1544197150-b99a580bb7a8?auto=format&fit=crop&w=200&q=80'
-    },
-    {
-      id: 'ORD-9824',
-      producto: 'GPU PNY NVIDIA RTX 4090 24GB',
-      descripcion: 'NVIDIA Ada Lovelace • 24GB GDDR6X',
-      cantidad: 3,
-      stock: 5,
-      estado: 'En preparación',
-      imageUrl: 'https://images.unsplash.com/photo-1591488320449-011701bb6704?auto=format&fit=crop&w=200&q=80'
-    }
-  ];
+  pedidos: Pedido[] = [];
 
   // Modales
   mostrarModalNuevo = false;
@@ -73,7 +35,7 @@ export class App implements OnInit {
     cantidad: 1,
     stock: 10,
     imageUrl: '',
-    estado: 'En preparación'
+    estado: 'PENDIENTE'
   };
 
   // Modelo para Editar Pedido (PUT)
@@ -129,8 +91,10 @@ export class App implements OnInit {
         .then(() => {
           this.verificarSesion();
         })
-        .catch(() => {
+        .catch(error => {
           this.verificarSesion();
+          this.errorAutenticacion = 'No fue posible validar la sesión con AWS Cognito. Intenta iniciar sesión nuevamente.';
+          console.error('[App] Error al completar el flujo OIDC:', error);
         });
     }
   }
@@ -138,7 +102,12 @@ export class App implements OnInit {
   login(): void {
     console.log('[App] Invocando inicio de sesión en AWS Cognito mediante this.authService.login()...');
     this.errorAutenticacion = null;
-    this.authService.login();
+    try {
+      this.authService.login();
+    } catch (error) {
+      this.errorAutenticacion = 'No fue posible iniciar el flujo seguro de inicio de sesión.';
+      console.error('[App] No se pudo iniciar el flujo OIDC con PKCE:', error);
+    }
   }
 
   logout(): void {
@@ -195,6 +164,7 @@ export class App implements OnInit {
     } else {
       this.usuario = '';
       this.esAdmin = false;
+      this.pedidos = [];
       console.log('[Auth Debug] No se encontró una sesión activa o el token no ha sido procesado aún.');
     }
     console.log('[Auth Debug] Estado final -> autenticado:', this.autenticado, '| esAdmin:', this.esAdmin);
@@ -241,7 +211,7 @@ export class App implements OnInit {
       cantidad: 1,
       stock: 10,
       imageUrl: '',
-      estado: 'En preparación'
+      estado: 'PENDIENTE'
     };
     this.mostrarModalNuevo = true;
   }
@@ -263,23 +233,21 @@ export class App implements OnInit {
 
     this.cargando = true;
 
-    // Payload limpio hacia Spring Boot: No se incluye id generado localmente para que PostgreSQL asigne la clave primaria
+    // Payload alineado al backend (sin descripcion / sin id local)
     const backendPayload: Pedido = {
       producto: this.nuevoPedido.producto.trim(),
-      descripcion: this.nuevoPedido.descripcion ? this.nuevoPedido.descripcion.trim() : undefined,
       cantidad: Number(this.nuevoPedido.cantidad),
       stock: Number(this.nuevoPedido.stock) || 0,
       imageUrl: this.nuevoPedido.imageUrl.trim(),
-      estado: this.nuevoPedido.estado || 'En preparación'
+      estado: this.nuevoPedido.estado || 'PENDIENTE'
     };
 
     this.pedidosService.crearPedido(backendPayload).subscribe({
       next: (res: Pedido) => {
         this.cargando = false;
-        const pedidoConfirmado: Pedido = res && res.id ? res : { ...backendPayload, id: 'ORD-' + Date.now() };
-        this.pedidos.unshift(pedidoConfirmado);
+        this.pedidos.unshift(res);
         this.cerrarModalNuevo();
-        this.mostrarAlerta(`Pedido [${pedidoConfirmado.id}] registrado exitosamente en el backend Spring Boot (POST 201).`, 'success');
+        this.mostrarAlerta(`Pedido [${res.id}] registrado exitosamente en el backend Spring Boot (POST 201).`, 'success');
       },
       error: (err) => {
         this.cargando = false;
@@ -336,7 +304,7 @@ export class App implements OnInit {
   }
 
   // DELETE: Cancelar / Eliminar pedido
-  cancelarPedido(id: string | number | undefined): void {
+  cancelarPedido(id: number | undefined): void {
     if (id === undefined) return;
     if (!this.esAdmin) {
       this.mostrarAlerta('Acceso denegado (403): Se requiere rol de Administrador (Grupo Admin en Cognito) para cancelar pedidos.', 'danger');
@@ -382,12 +350,22 @@ export class App implements OnInit {
       return `Error 404 (No Encontrado): El recurso solicitado no existe en el backend Spring Boot.`;
     }
     if (status === 409) {
-      return error.error?.message || `Error 409 (Conflicto): Conflicto en el servidor backend al ${accion}.`;
+      return error.error?.error || error.error?.message || error.message || `Error 409 (Conflicto): Conflicto en el servidor backend al ${accion}.`;
     }
     if (status >= 500) {
-      return error.error?.message || `Error ${status} (Servidor): Ocurrió un error interno en el backend Spring Boot al ${accion}.`;
+      return error.error?.error || error.error?.message || `Error ${status} (Servidor): Ocurrió un error interno en el backend Spring Boot al ${accion}.`;
     }
-    return error.error?.message || error.message || `Error (${status || 'desconocido'}) al ${accion}.`;
+    return error.error?.error || error.error?.message || error.message || `Error (${status || 'desconocido'}) al ${accion}.`;
+  }
+
+  etiquetaEstado(estado?: EstadoPedido): string {
+    const etiquetas: Record<EstadoPedido, string> = {
+      PENDIENTE: 'Pendiente',
+      EN_PREPARACION: 'En preparación',
+      DISPONIBLE: 'Disponible',
+      ENTREGADO: 'Entregado'
+    };
+    return estado ? etiquetas[estado] : 'Sin estado';
   }
 
   mostrarAlerta(mensaje: string, tipo: 'success' | 'danger' | 'info'): void {
